@@ -12,3 +12,6 @@ build/
 .terraform/
 *.tfstate
 *.tfstate.*
+funny_icebreaker/
+.agents-cli-original/
+deployment_metadata.json.lock
