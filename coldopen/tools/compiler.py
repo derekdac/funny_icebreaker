@@ -409,6 +409,7 @@ def _upload_pptx_to_gcs(pptx_path: Path, bucket_name: str, draft_id: str) -> str
         client = storage.Client()
         blob_name = f"coldopen-decks/{draft_id}/{pptx_path.name}"
         blob = client.bucket(bucket_name).blob(blob_name)
+        blob.content_disposition = f'attachment; filename="{pptx_path.name}"'
         blob.upload_from_filename(str(pptx_path), content_type=PPTX_MIME_TYPE)
         return f"https://storage.cloud.google.com/{bucket_name}/{blob_name}"
     except Exception as exc:  # pragma: no cover - optional cloud export
