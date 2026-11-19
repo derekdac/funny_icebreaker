@@ -34,8 +34,17 @@ from a2a.server.routes import (
 from a2a.server.tasks import TaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentExtension, AgentInterface
 from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
-from google.adk.a2a.executor.a2a_agent_executor import A2aAgentExecutor
+from google.adk.a2a.executor.a2a_agent_executor import (
+    A2aAgentExecutor,
+    A2aAgentExecutorConfig,
+)
 from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
+
+from coldopen.app_utils.a2ui_bridge import (
+    a2ui_execute_interceptor,
+    a2ui_genai_part_to_a2a_part,
+    build_a2ui_extensions,
+)
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -77,6 +86,7 @@ def _default_capabilities() -> AgentCapabilities:
                 uri=_ADK_AGENT_EXECUTOR_EXTENSION_URI,
                 description=("Ability to use the new agent executor implementation"),
             ),
+            *build_a2ui_extensions(),
         ],
     )
 
@@ -143,8 +153,16 @@ async def attach_a2a_routes(
     # Advertise a v0.3 JSON-RPC interface for registration with Gemini.
     agent_card = _add_v0_3_compat_interface(agent_card)
 
+    executor_config = A2aAgentExecutorConfig(
+        gen_ai_part_converter=a2ui_genai_part_to_a2a_part,
+        execute_interceptors=[a2ui_execute_interceptor()],
+    )
     request_handler = DefaultRequestHandler(
-        agent_executor=A2aAgentExecutor(runner=runner, force_new_version=True),
+        agent_executor=A2aAgentExecutor(
+            runner=runner,
+            config=executor_config,
+            force_new_version=True,
+        ),
         task_store=task_store,
         agent_card=agent_card,
     )

@@ -229,3 +229,48 @@ async def test_compile_and_save_pptx_artifact(tmp_path: Path) -> None:
     assert captured[0][0] == "artifact_deck.pptx"
     assert captured[0][1].inline_data.mime_type == PPTX_MIME_TYPE  # type: ignore[union-attr]
     assert len(captured[0][1].inline_data.data) > 0  # type: ignore[union-attr]
+
+
+async def test_a2ui_over_a2a_bridge_and_card_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COLDOPEN_ENABLE_A2UI", raising=False)
+    from types import SimpleNamespace
+    from google.genai import types
+    from coldopen.app_utils.a2ui_bridge import (
+        A2UI_EXTENSION_V0_8,
+        A2UI_EXTENSION_V0_9,
+        A2UI_MIME_TYPE,
+        a2ui_enabled_provider,
+        a2ui_execute_interceptor,
+        a2ui_genai_part_to_a2a_part,
+        build_a2ui_extensions,
+    )
+
+    ext_uris = {e.uri for e in build_a2ui_extensions()}
+    assert {A2UI_EXTENSION_V0_8, A2UI_EXTENSION_V0_9} <= ext_uris
+
+    fc_part = types.Part(
+        function_call=types.FunctionCall(name="send_a2ui_json_to_client", args={"a2ui_payload": "{}"})
+    )
+    assert a2ui_genai_part_to_a2a_part(fc_part) is None
+
+    fr_part = types.Part(
+        function_response=types.FunctionResponse(
+            name="send_a2ui_json_to_client",
+            response={"validated_a2ui_json": [{"version": "v0.9", "createSurface": {"surfaceId": "s1"}}]},
+        )
+    )
+    converted = a2ui_genai_part_to_a2a_part(fr_part)
+    assert isinstance(converted, list) and len(converted) == 1
+    assert converted[0].media_type == A2UI_MIME_TYPE
+
+    interceptor = a2ui_execute_interceptor()
+    activated: list[str] = []
+    ctx = SimpleNamespace(
+        requested_extensions={A2UI_EXTENSION_V0_9},
+        add_activated_extension=activated.append,
+    )
+    await interceptor.before_agent(ctx)  # type: ignore[misc,arg-type]
+    assert activated == [A2UI_EXTENSION_V0_9]
+    assert a2ui_enabled_provider(SimpleNamespace()) is True  # type: ignore[arg-type]
+    await interceptor.after_agent(SimpleNamespace(), SimpleNamespace())  # type: ignore[misc,arg-type]
+    assert a2ui_enabled_provider(SimpleNamespace()) is False  # type: ignore[arg-type]

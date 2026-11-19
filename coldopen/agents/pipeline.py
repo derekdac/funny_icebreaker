@@ -5,12 +5,15 @@ from __future__ import annotations
 import os
 
 from a2ui.adk import SendA2uiToClientToolset
-from a2ui.core.basic_catalog import BasicCatalog
-from a2ui.processor.processor import A2uiRequestProcessor
 from google.adk.agents import LlmAgent, SequentialAgent
 from google.adk.tools import ToolContext
 from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
+
+from coldopen.app_utils.a2ui_bridge import (
+    a2ui_enabled_provider,
+    a2ui_processor_provider,
+)
 
 from coldopen.guardrails.policy import adk_policy_and_compaction_callback
 from coldopen.prompts.constitution import (
@@ -111,11 +114,9 @@ def build_coldopen_pipeline() -> LlmAgent:
         sub_agents=[asset_agent, compiler_agent],
     )
 
-    a2ui_enabled = os.getenv("COLDOPEN_ENABLE_A2UI", "false").lower() == "true"
-    a2ui_processor = A2uiRequestProcessor(catalogs=[BasicCatalog("0.9")])
     a2ui_toolset = SendA2uiToClientToolset(
-        a2ui_enabled=a2ui_enabled,
-        a2ui_processor=a2ui_processor,
+        a2ui_enabled=a2ui_enabled_provider,
+        a2ui_processor=a2ui_processor_provider,
     )
 
     return LlmAgent(
