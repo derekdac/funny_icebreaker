@@ -16,7 +16,7 @@ from contextvars import ContextVar
 from typing import Any
 
 from a2a.server.agent_execution import RequestContext
-from a2a.types import AgentExtension, Part
+from a2a.types import AgentExtension, Artifact, Part, TaskArtifactUpdateEvent
 from a2ui.constants import A2UI_TOOL_NAME, A2UI_VALIDATED_JSON_KEY
 from a2ui.core.basic_catalog import BasicCatalog
 from a2ui.inference_formats import to_message_dicts
@@ -32,6 +32,8 @@ _LOGGER = logging.getLogger(__name__)
 A2UI_EXTENSION_V0_8 = "https://a2ui.org/a2a-extension/a2ui/v0.8"
 A2UI_EXTENSION_V0_9 = "https://a2ui.org/a2a-extension/a2ui/v0.9"
 A2UI_MIME_TYPE = "application/json+a2ui"
+PPTX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+_MAX_INLINE_A2A_FILE_BYTES = 12 * 1024 * 1024
 
 _A2UI_CLIENT_ACTION_KEYS = ("userAction", "action")
 _A2UI_TAG_DETECT_RE = re.compile(r"<a2ui(?:-json)?\b", re.IGNORECASE)
@@ -260,11 +262,66 @@ def a2ui_execute_interceptor() -> ExecuteInterceptor:
             _ACTIVE_A2UI_VERSION.set(None)
         return context
 
+    async def _after_event(exec_ctx: Any, a2a_event: Any, adk_event: Any) -> Any:
+        actions = getattr(adk_event, "actions", None)
+        artifact_delta = getattr(actions, "artifact_delta", None) or {}
+        if not artifact_delta:
+            return a2a_event
+
+        artifact_service = getattr(getattr(exec_ctx, "runner", None), "artifact_service", None)
+        if artifact_service is None:
+            return a2a_event
+
+        task_id = getattr(a2a_event, "task_id", None) or ""
+        context_id = getattr(a2a_event, "context_id", None) or ""
+        extra_events: list[Any] = []
+        for filename, version in artifact_delta.items():
+            if not str(filename).lower().endswith(".pptx"):
+                continue
+            try:
+                loaded = await artifact_service.load_artifact(
+                    app_name=exec_ctx.app_name,
+                    user_id=exec_ctx.user_id,
+                    session_id=exec_ctx.session_id,
+                    filename=filename,
+                    version=version,
+                )
+                inline = getattr(loaded, "inline_data", None)
+                data = getattr(inline, "data", None)
+                mime_type = getattr(inline, "mime_type", None) or PPTX_MIME_TYPE
+                if data and len(data) <= _MAX_INLINE_A2A_FILE_BYTES:
+                    file_part = part_converter._compat.make_file_part_with_bytes(
+                        data=bytes(data),
+                        mime_type=mime_type,
+                        name=str(filename),
+                    )
+                    extra_events.append(
+                        TaskArtifactUpdateEvent(
+                            task_id=task_id,
+                            context_id=context_id,
+                            artifact=Artifact(
+                                artifact_id=f"deck-{filename}",
+                                name=str(filename),
+                                description="Compiled ColdOpen 16:9 PowerPoint icebreaker deck",
+                                parts=[file_part],
+                            ),
+                            append=False,
+                            last_chunk=True,
+                        )
+                    )
+            except Exception as exc:
+                _LOGGER.warning("Failed to attach native A2A FilePart for %s: %s", filename, exc)
+
+        if extra_events:
+            return [a2a_event, *extra_events]
+        return a2a_event
+
     async def _after_agent(_exec_ctx: Any, event: Any) -> Any:
         _ACTIVE_A2UI_VERSION.set(None)
         return event
 
     return ExecuteInterceptor(
         before_agent=_before_agent,
+        after_event=_after_event,
         after_agent=_after_agent,
     )

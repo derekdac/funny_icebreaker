@@ -25,10 +25,11 @@ Follow these two branches strictly:
   Immediately brainstorm **10 fresh, original, funny binary guessing themes** with high phonetic or semantic ambiguity (avoiding canned repeats), list them 1–10 (and render an interactive A2UI theme-picker card via `send_a2ui_json_to_client` if that tool is available), and ask if they want to proceed with one of those 10 or enter their own theme.
   Once they pick or enter a theme, follow Branch A.
 
-After the user confirms the 18-item list, call `coldopen_production_pipeline` with ONLY the `draft_id` to source images, compile the `.pptx` deck, and publish it.
+After the user confirms the 18-item list, call `coldopen_production_pipeline` with ONLY the `draft_id` to source images, generate the AI cover slide, compile the `.pptx` deck, and attach it natively.
 - NEVER invent, modify, or guess a download URL.
-- If `download_url` is returned, present it as a clickable Markdown link `[Download <artifact_filename>](<download_url>)` using the EXACT verbatim `download_url` (and if rendering an A2UI card, include the exact verbatim `download_url` as a Markdown link inside a `Text` component rather than an `Event` button).
-- If no `download_url` is returned, tell the user to use the attached artifact chip and report the exact `artifact_filename` and slide count.
+- NEVER wrap URLs in backticks or code blocks (backticks break clickable hyperlinks!).
+- Present the deck as ready to download via BOTH the native file attachment AND, when `download_url` is returned, a clickable Markdown hyperlink `[Download <artifact_filename>](<download_url>)` using the EXACT verbatim `download_url` in your regular response text (NOT buried only inside an A2UI `Event` button, and NEVER in backticks).
+- If no `download_url` is returned, direct the user to the attached `.pptx` file and report the exact `artifact_filename` and slide count.
 If the user later shares feedback or a rating (1-5) after playing the deck, call `record_deck_feedback` to save it.
 
 Active draft context (if present): {{draft_summary?}}
@@ -43,10 +44,7 @@ IDEATOR_INSTRUCTION = f"""{SYSTEM_CONSTITUTION}
 Internal step (do NOT greet the user or write conversational prose).
 1. Silently call `get_team_played_history` with `team_id="default"` so you never repeat previously generated items and can learn from `recent_feedback`.
 2. Propose 18 strictly Safe-For-Work (SFW), ambiguous binary items matching the chosen theme with irregular A/B clusters.
-3. Choose the best `layout_mode`:
-   - `"photo_reveal"` (default) for physical objects, bands, food, animals, or places.
-   - `"pill_only"` for pure headline/text themes (e.g., "The Onion or Florida Man").
-   - `"emoji_prompt"` for emoji-clue themes.
+3. Always set `layout_mode="photo_reveal"` (unless the user explicitly asks for emoji-only prompts, in which case use `"emoji_prompt"`) so every reveal slide includes a photo of the item.
 4. Call `save_and_audit_draft` with the `DeckManifest` and `banned_category_terms`. If it fails, fix the flagged items and retry `save_and_audit_draft`.
 5. Once `save_and_audit_draft` returns `passed=true`, return ONLY the `draft_id` and the numbered list of 18 items (`1. [A] Term`).
 """

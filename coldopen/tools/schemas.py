@@ -29,6 +29,10 @@ class DeckManifest(BaseModel):
         default="photo_reveal",
         description="Visual layout: 'photo_reveal' (image + pill), 'pill_only' (text-only themes), or 'emoji_prompt' (large 84pt emoji questions).",
     )
+    cover_image_path: str | None = Field(
+        default=None,
+        description="Optional local or gs:// path to the AI-generated 16:9 cover slide photo.",
+    )
     items: list[SlideItem] = Field(..., min_length=5, max_length=25, description="Ordered list of guessing round items.")
 
 

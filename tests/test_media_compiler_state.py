@@ -269,17 +269,23 @@ def test_generate_gemini_image_uses_vertex_adc_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     png_data = _png_bytes()
+    captured_models: list[str] = []
 
-    class _FakeImagenModels:
-        def generate_images(self, **kwargs: Any) -> Any:
-            return SimpleNamespace(
-                generated_images=[SimpleNamespace(image=SimpleNamespace(image_bytes=png_data))]
-            )
+    class _FakeImageModels:
+        def generate_content(self, **kwargs: Any) -> Any:
+            captured_models.append(str(kwargs.get("model")))
+            part = SimpleNamespace(inline_data=SimpleNamespace(data=png_data, mime_type="image/png"))
+            return SimpleNamespace(candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))])
 
-    monkeypatch.setattr(media_mod, "_get_genai_client", lambda: SimpleNamespace(models=_FakeImagenModels()))
+    monkeypatch.setattr(media_mod, "_get_genai_client", lambda: SimpleNamespace(models=_FakeImageModels()))
     saved = media_mod._generate_gemini_image("Billy", "bookcase", tmp_path / "billy")
     assert saved is not None
     assert Path(saved).exists()
+    assert captured_models == ["gemini-2.5-flash-image"]
+
+    cover = media_mod._generate_cover_image("IKEA or Metal?", tmp_path / "cover")
+    assert cover is not None
+    assert Path(cover).exists()
 
 
 # ---------------------------------------------------------------------------

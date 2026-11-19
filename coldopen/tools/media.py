@@ -183,14 +183,16 @@ def _sync_download_image_bytes(
     return None
 
 
-def _save_as_png(raw_bytes: bytes, dest_path: Path) -> str | None:
-    """Validate and normalize image bytes to PNG so python-pptx embeds every image cleanly."""
+def _save_as_png(raw_bytes: bytes, dest_path: Path, max_dim: int = 1280) -> str | None:
+    """Validate, downscale oversized images, and normalize to PNG for python-pptx."""
     try:
         with Image.open(io.BytesIO(raw_bytes)) as img:
             rgb = img.convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB")
+            if max(rgb.size) > max_dim:
+                rgb.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
             png_path = dest_path.with_suffix(".png")
             png_path.parent.mkdir(parents=True, exist_ok=True)
-            rgb.save(png_path, format="PNG")
+            rgb.save(png_path, format="PNG", optimize=True)
             return str(png_path)
     except Exception:
         return None
@@ -284,35 +286,91 @@ def _verify_image_likeness(image_path: str, term: str, hint: str) -> bool:
         return False
 
 
-def _generate_gemini_image(term: str, hint: str, dest_path: Path) -> str | None:
-    """Generate a clean studio photo fallback via Gemini/Imagen when Wikimedia has no match."""
+def _extract_generated_image_bytes(resp: Any) -> bytes | None:
+    """Extract raw image bytes from a Gemini generate_content IMAGE response."""
+    candidates = getattr(resp, "candidates", None) or []
+    for cand in candidates:
+        content = getattr(cand, "content", None)
+        parts = getattr(content, "parts", None) or []
+        for part in parts:
+            inline = getattr(part, "inline_data", None)
+            if inline and getattr(inline, "data", None):
+                return bytes(inline.data)
+    return None
+
+
+def _generate_gemini_image(
+    term: str,
+    hint: str,
+    dest_path: Path,
+    *,
+    aspect_ratio: str = "4:3",
+    custom_prompt: str | None = None,
+) -> str | None:
+    """Generate a clean studio photo via Gemini native image generation."""
     try:
         client = _get_genai_client()
     except Exception as exc:
-        _LOGGER.warning("GenAI client initialization failed for Imagen fallback: %s", exc)
+        _LOGGER.warning("GenAI client initialization failed for image generation: %s", exc)
         return None
 
     if client is None:
         return None
 
-    try:
-        image_model = os.getenv("COLDOPEN_IMAGE_MODEL", "imagen-3.0-generate-002")
-        prompt = (
-            f"Clean, sharp, realistic studio photograph of '{term}' ({hint}). "
-            "No text, no watermarks, centered subject on a clean background."
-        )
-        result = client.models.generate_images(
-            model=image_model,
-            prompt=prompt,
-            config={"number_of_images": 1},
-        )
-        if result.generated_images:
-            img_bytes = result.generated_images[0].image.image_bytes
-            return _save_as_png(img_bytes, dest_path)
-    except Exception as exc:
-        _LOGGER.warning("Imagen fallback failed for '%s': %s", term, exc)
-        return None
+    from google.genai import types
+
+    image_model = os.getenv("COLDOPEN_IMAGE_MODEL", "gemini-2.5-flash-image")
+    prompts = (
+        [custom_prompt]
+        if custom_prompt
+        else [
+            (
+                f"Clean, sharp, realistic studio photograph of '{term}' ({hint}). "
+                "Centered subject on a clean minimalist background, bright editorial lighting, no text, no watermarks."
+            ),
+            (
+                f"Playful, workplace-safe minimalist editorial illustration representing '{hint}' "
+                f"inspired by the concept '{term}'. Clean background, no text, no watermarks."
+            ),
+        ]
+    )
+
+    for prompt in prompts:
+        try:
+            resp = client.models.generate_content(
+                model=image_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["IMAGE"],
+                    image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+                ),
+            )
+            img_bytes = _extract_generated_image_bytes(resp)
+            if img_bytes:
+                saved = _save_as_png(img_bytes, dest_path)
+                if saved:
+                    return saved
+        except Exception as exc:
+            _LOGGER.warning("Gemini image generation failed for '%s': %s", term, exc)
     return None
+
+
+def _generate_cover_image(deck_title: str, dest_path: Path) -> str | None:
+    """Generate a witty 16:9 widescreen cover slide photo bringing the deck title to life."""
+    prompt = (
+        f"Create a vibrant, clever, editorial 16:9 widescreen game-show cover slide image for the binary guessing game titled: "
+        f'"{deck_title}". '
+        f'Include the exact title "{deck_title}" prominently in bold, crisp, ultra-legible modern typography '
+        "with high contrast, and visually bring the funny contrast between the two categories in the title to life "
+        "in a witty, workplace-safe split-scene or playful visual mashup. Studio photography + modern graphic design, no watermarks."
+    )
+    return _generate_gemini_image(
+        deck_title,
+        "game show cover slide",
+        dest_path,
+        aspect_ratio="16:9",
+        custom_prompt=prompt,
+    )
 
 
 async def _fetch_one_async(
@@ -549,25 +607,8 @@ async def fetch_wikimedia_specimens_batch(
             )
             return err.model_dump()
 
-        if manifest_dict.get("layout_mode") == "pill_only":
-            log_tool_outcome(
-                _LOGGER,
-                trace_id=trace_id,
-                agent_name="asset_likeness_agent",
-                tool_name="fetch_wikimedia_specimens_batch",
-                status="ok",
-                outcome_summary="skipped (pill_only layout)",
-                duration_ms=(time.perf_counter() - start) * 1000,
-            )
-            return {
-                "ok": True,
-                "draft_id": draft_id,
-                "images_found": 0,
-                "total_items": len(manifest_dict.get("items", [])),
-                "skipped_reason": "pill_only",
-            }
-
         items = manifest_dict.get("items", [])
+        deck_title = str(manifest_dict.get("deck_title", "ColdOpen Icebreaker"))
         export_bucket = get_export_bucket()
         draft_slug = _slugify(draft_id)
 
@@ -587,6 +628,7 @@ async def fetch_wikimedia_specimens_batch(
             )
         )
 
+        cover_resolved: str | None = None
         with dir_ctx as work_dir_str:
             dest_dir = Path(work_dir_str)
             dest_dir.mkdir(parents=True, exist_ok=True)
@@ -597,18 +639,39 @@ async def fetch_wikimedia_specimens_batch(
                 follow_redirects=True,
                 headers={"User-Agent": _USER_AGENT},
             ) as client:
-                paths = await asyncio.gather(
-                    *[
-                        _fetch_one_async(
-                            client,
-                            sem,
-                            str(item.get("term", "")),
-                            str(item.get("category_label", "")),
-                            dest_dir,
-                        )
-                        for item in items
-                    ]
+                cover_task = asyncio.to_thread(
+                    _generate_cover_image,
+                    deck_title,
+                    dest_dir / "cover",
                 )
+                item_tasks = [
+                    _fetch_one_async(
+                        client,
+                        sem,
+                        str(item.get("term", "")),
+                        str(item.get("category_label", "")),
+                        dest_dir,
+                    )
+                    for item in items
+                ]
+                results = await asyncio.gather(cover_task, *item_tasks)
+                cover_local = results[0]
+                paths = results[1:]
+
+            if cover_local:
+                cover_resolved = cover_local
+                if export_bucket:
+                    cover_gcs_uri = await asyncio.to_thread(
+                        upload_draft_image_to_gcs,
+                        draft_id,
+                        9999,
+                        cover_local,
+                        export_bucket,
+                    )
+                    if cover_gcs_uri:
+                        cover_resolved = cover_gcs_uri
+                    elif ephemeral:
+                        cover_resolved = None
 
             found = 0
             for idx, (item, local_path) in enumerate(zip(items, paths)):
@@ -630,6 +693,7 @@ async def fetch_wikimedia_specimens_batch(
                 if resolved_path:
                     found += 1
 
+        manifest_dict["cover_image_path"] = cover_resolved
         manifest_dict["items"] = items
         store.save_draft_manifest(draft_id, manifest_dict)
         if export_bucket:
@@ -641,12 +705,13 @@ async def fetch_wikimedia_specimens_batch(
             agent_name="asset_likeness_agent",
             tool_name="fetch_wikimedia_specimens_batch",
             status="ok",
-            outcome_summary=f"found={found}/{len(items)}",
+            outcome_summary=f"found={found}/{len(items)}, cover={bool(cover_resolved)}",
             duration_ms=(time.perf_counter() - start) * 1000,
         )
         return {
             "ok": True,
             "draft_id": draft_id,
             "images_found": found,
+            "cover_generated": bool(cover_resolved),
             "total_items": len(items),
         }

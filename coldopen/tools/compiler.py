@@ -152,6 +152,18 @@ def _materialize_manifest_images(
             downloaded = download_gcs_uri_to_file(fallback_uri, dest_file)
             if downloaded:
                 item["image_path"] = str(downloaded)
+
+    cover_path = resolved.get("cover_image_path")
+    if isinstance(cover_path, str) and cover_path:
+        cover_dest = work_dir / "cover.png"
+        if cover_path.startswith("gs://"):
+            downloaded_cover = download_gcs_uri_to_file(cover_path, cover_dest)
+            resolved["cover_image_path"] = str(downloaded_cover) if downloaded_cover else None
+        elif not Path(cover_path).exists() and export_bucket:
+            fallback_cover_uri = f"gs://{export_bucket}/coldopen-drafts/{draft_id}/images/9999.png"
+            downloaded_cover = download_gcs_uri_to_file(fallback_cover_uri, cover_dest)
+            if downloaded_cover:
+                resolved["cover_image_path"] = str(downloaded_cover)
     return resolved
 
 
@@ -217,10 +229,24 @@ def compile_pptx_deck(
         prs.slide_height = Inches(7.5)
         blank_layout = prs.slide_layouts[6]
 
-        # 1. Title Slide
+        # 1. Title Slide (full-bleed AI-generated cover photo when available)
         title_slide = prs.slides.add_slide(blank_layout)
         _set_white_background(title_slide)
-        _add_centered_text(title_slide, validated.deck_title, top=2.6, height=1.8, font_size=52)
+        cover_added = False
+        if validated.cover_image_path and Path(validated.cover_image_path).exists():
+            try:
+                title_slide.shapes.add_picture(
+                    str(validated.cover_image_path),
+                    Inches(0),
+                    Inches(0),
+                    width=Inches(13.333),
+                    height=Inches(7.5),
+                )
+                cover_added = True
+            except Exception as exc:
+                _LOGGER.warning("Skipping corrupt cover image %s: %s", validated.cover_image_path, exc)
+        if not cover_added:
+            _add_centered_text(title_slide, validated.deck_title, top=2.6, height=1.8, font_size=52)
 
         # 2. Question & Reveal Pairs
         for item in validated.items:
