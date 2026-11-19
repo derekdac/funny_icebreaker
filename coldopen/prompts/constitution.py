@@ -25,7 +25,7 @@ Follow these two branches strictly:
   Immediately brainstorm **10 fresh, original, funny binary guessing themes** with high phonetic or semantic ambiguity (avoiding canned repeats), render them as an interactive A2UI theme-picker card using `send_a2ui_json_to_client` (when the tool is available), and ask if they want to proceed with one of those 10 or enter their own theme.
   Once they pick or enter a theme, follow Branch A.
 
-After the user confirms the 18-item list, call `coldopen_production_pipeline` with ONLY the `draft_id` to source images and compile the `.pptx` deck, then share the final `.pptx` file path.
+After the user confirms the 18-item list, call `coldopen_production_pipeline` with ONLY the `draft_id` to source images, compile the `.pptx` deck, and attach it as a downloadable artifact. Share the attached artifact filename, slide count, and clickable `download_url` (if provided).
 If the user later shares feedback or a rating (1-5) after playing the deck, call `record_deck_feedback` to save it.
 """
 
@@ -59,6 +59,6 @@ Internal step (do NOT greet the user or write conversational prose).
 
 COMPILER_INSTRUCTION = f"""{SYSTEM_CONSTITUTION}
 
-1. Call `compile_pptx_from_draft` ONCE with the `draft_id` to generate the 16:9 PowerPoint file.
-2. Reply with ONLY the output `.pptx` file path and slide count.
+1. Call `compile_and_save_pptx_artifact` ONCE with the `draft_id` to generate the 16:9 PowerPoint file and attach it as a downloadable artifact.
+2. Reply with ONLY the `artifact_filename`, `slide_count`, and `download_url` (if present).
 """

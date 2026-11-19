@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
+from google.adk.tools import ToolContext
+from google.genai import types
 from PIL import Image
 
 from pptx import Presentation
@@ -392,3 +396,67 @@ def compile_pptx_from_draft(
         output_path=output_path,
         db_path=db_path,
     )
+
+
+PPTX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+
+def _upload_pptx_to_gcs(pptx_path: Path, bucket_name: str, draft_id: str) -> str | None:
+    """Optionally upload compiled PPTX to GCS and return an authenticated download URL."""
+    try:
+        from google.cloud import storage
+
+        client = storage.Client()
+        blob_name = f"coldopen-decks/{draft_id}/{pptx_path.name}"
+        blob = client.bucket(bucket_name).blob(blob_name)
+        blob.upload_from_filename(str(pptx_path), content_type=PPTX_MIME_TYPE)
+        return f"https://storage.cloud.google.com/{bucket_name}/{blob_name}"
+    except Exception as exc:  # pragma: no cover - optional cloud export
+        _LOGGER.warning("GCS export skipped for %s: %s", pptx_path.name, exc)
+        return None
+
+
+async def compile_and_save_pptx_artifact(
+    draft_id: str,
+    tool_context: ToolContext,
+    output_path: str | None = None,
+    db_path: str = "coldopen_state.db",
+) -> dict[str, Any]:
+    """Compile a saved draft_id to PPTX and publish it as a downloadable ADK artifact.
+
+    Args:
+        draft_id: Identifier returned by save_and_audit_draft.
+        tool_context: ADK ToolContext used to save the compiled deck as a session artifact.
+        output_path: Optional destination filesystem path for the compiled .pptx file.
+        db_path: SQLite database path storing the draft and played history.
+
+    Returns:
+        CompileDeckResult fields enriched with artifact_filename, artifact_version, and
+        optional download_url (when COLDOPEN_EXPORT_BUCKET is configured).
+    """
+    result = compile_pptx_from_draft(
+        draft_id=draft_id,
+        output_path=output_path,
+        db_path=db_path,
+    )
+    if "error_code" in result:
+        return result
+
+    pptx_path = Path(str(result["output_path"]))
+    pptx_bytes = pptx_path.read_bytes()
+    artifact_part = types.Part.from_bytes(data=pptx_bytes, mime_type=PPTX_MIME_TYPE)
+    version = await tool_context.save_artifact(
+        filename=pptx_path.name,
+        artifact=artifact_part,
+    )
+    result["artifact_filename"] = pptx_path.name
+    result["artifact_version"] = version
+    result["mime_type"] = PPTX_MIME_TYPE
+
+    export_bucket = os.getenv("COLDOPEN_EXPORT_BUCKET", "").strip()
+    if export_bucket:
+        download_url = _upload_pptx_to_gcs(pptx_path, export_bucket, draft_id)
+        if download_url:
+            result["download_url"] = download_url
+
+    return result

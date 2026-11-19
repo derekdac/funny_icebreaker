@@ -21,7 +21,7 @@ from coldopen.prompts.constitution import (
     SYSTEM_CONSTITUTION,
 )
 from coldopen.tools.compiler import (
-    compile_pptx_from_draft,
+    compile_and_save_pptx_artifact,
     get_team_played_history,
     record_deck_feedback,
     save_and_audit_draft,
@@ -98,10 +98,10 @@ def build_coldopen_pipeline() -> LlmAgent:
     compiler_agent = LlmAgent(
         name="deck_compiler_agent",
         model=MODEL_FLASH,
-        description="Compiles a saved draft_id into a minimalist 16:9 PowerPoint deck.",
+        description="Compiles a saved draft_id into a minimalist 16:9 PowerPoint deck and attaches it as a downloadable artifact.",
         instruction=COMPILER_INSTRUCTION,
         generate_content_config=low_thinking,
-        tools=[compile_pptx_from_draft],
+        tools=[compile_and_save_pptx_artifact],
         output_key="compile_result",
     )
 

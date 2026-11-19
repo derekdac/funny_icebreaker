@@ -199,3 +199,33 @@ def test_a2a_server_and_callback_trajectory() -> None:
     resp = adk_policy_and_compaction_callback(SimpleNamespace(), blocked_req)  # type: ignore[arg-type]
     assert resp is not None
     assert "SFW" in resp.content.parts[0].text  # type: ignore[union-attr]
+
+
+async def test_compile_and_save_pptx_artifact(tmp_path: Path) -> None:
+    from coldopen.tools.compiler import PPTX_MIME_TYPE, compile_and_save_pptx_artifact
+
+    db_path = str(tmp_path / "artifact.db")
+    pptx_path = str(tmp_path / "artifact_deck.pptx")
+    saved = save_and_audit_draft(_sample_manifest("artifact-team"), banned_category_terms=["ikea"], db_path=db_path)
+    assert saved["passed"] is True
+
+    captured: list[tuple[str, object]] = []
+
+    class _FakeToolContext:
+        async def save_artifact(self, *, filename: str, artifact: object) -> int:
+            captured.append((filename, artifact))
+            return 0
+
+    result = await compile_and_save_pptx_artifact(
+        draft_id=str(saved["draft_id"]),
+        tool_context=_FakeToolContext(),  # type: ignore[arg-type]
+        output_path=pptx_path,
+        db_path=db_path,
+    )
+    assert result["artifact_filename"] == "artifact_deck.pptx"
+    assert result["artifact_version"] == 0
+    assert result["mime_type"] == PPTX_MIME_TYPE
+    assert len(captured) == 1
+    assert captured[0][0] == "artifact_deck.pptx"
+    assert captured[0][1].inline_data.mime_type == PPTX_MIME_TYPE  # type: ignore[union-attr]
+    assert len(captured[0][1].inline_data.data) > 0  # type: ignore[union-attr]
