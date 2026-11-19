@@ -111,7 +111,7 @@ def build_coldopen_pipeline() -> LlmAgent:
         sub_agents=[asset_agent, compiler_agent],
     )
 
-    a2ui_enabled = os.getenv("COLDOPEN_ENABLE_A2UI", "false").lower() == "true"
+    a2ui_enabled = os.getenv("COLDOPEN_ENABLE_A2UI", "true").lower() == "true"
     a2ui_processor = A2uiRequestProcessor(catalogs=[BasicCatalog("0.9")])
     a2ui_toolset = SendA2uiToClientToolset(
         a2ui_enabled=a2ui_enabled,
