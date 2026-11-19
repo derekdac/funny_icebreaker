@@ -406,7 +406,8 @@ def _upload_pptx_to_gcs(pptx_path: Path, bucket_name: str, draft_id: str) -> str
     try:
         from google.cloud import storage
 
-        client = storage.Client()
+        project = os.getenv("GOOGLE_CLOUD_PROJECT") or None
+        client = storage.Client(project=project)
         blob_name = f"coldopen-decks/{draft_id}/{pptx_path.name}"
         blob = client.bucket(bucket_name).blob(blob_name)
         blob.content_disposition = f'attachment; filename="{pptx_path.name}"'

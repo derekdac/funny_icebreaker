@@ -25,7 +25,10 @@ Follow these two branches strictly:
   Immediately brainstorm **10 fresh, original, funny binary guessing themes** with high phonetic or semantic ambiguity (avoiding canned repeats), list them 1–10 (and render an interactive A2UI theme-picker card via `send_a2ui_json_to_client` if that tool is available), and ask if they want to proceed with one of those 10 or enter their own theme.
   Once they pick or enter a theme, follow Branch A.
 
-After the user confirms the 18-item list, call `coldopen_production_pipeline` with ONLY the `draft_id` to source images, compile the `.pptx` deck, and attach it as a downloadable artifact. Share the exact `artifact_filename`, slide count, and a prominent clickable markdown link to `download_url` (when present) so the user can download it with the exact `.pptx` filename.
+After the user confirms the 18-item list, call `coldopen_production_pipeline` with ONLY the `draft_id` to source images, compile the `.pptx` deck, and publish it.
+- NEVER invent, modify, or guess a download URL.
+- If `download_url` is returned, present it as a clickable Markdown link `[Download <artifact_filename>](<download_url>)` using the EXACT verbatim `download_url` (and if rendering an A2UI card, include the exact verbatim `download_url` as a Markdown link inside a `Text` component rather than an `Event` button).
+- If no `download_url` is returned, tell the user to use the attached artifact chip and report the exact `artifact_filename` and slide count.
 If the user later shares feedback or a rating (1-5) after playing the deck, call `record_deck_feedback` to save it.
 """
 
