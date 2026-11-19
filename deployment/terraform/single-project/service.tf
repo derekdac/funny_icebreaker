@@ -42,6 +42,11 @@ resource "google_vertex_ai_reasoning_engine" "app" {
         value = google_storage_bucket.logs_data_bucket.name
       }
 
+      env {
+        name  = "COLDOPEN_EXPORT_BUCKET"
+        value = google_storage_bucket.logs_data_bucket.name
+      }
+
       # GOOGLE_CLOUD_PROJECT is reserved by Agent Runtime (the platform injects
       # it) and rejected in deployment_spec.env; GOOGLE_CLOUD_LOCATION is allowed.
       env {

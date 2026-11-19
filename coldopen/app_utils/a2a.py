@@ -41,6 +41,7 @@ from google.adk.a2a.executor.a2a_agent_executor import (
 from google.adk.a2a.utils.agent_card_builder import AgentCardBuilder
 
 from coldopen.app_utils.a2ui_bridge import (
+    a2ui_a2a_part_to_genai_part,
     a2ui_execute_interceptor,
     a2ui_genai_part_to_a2a_part,
     build_a2ui_extensions,
@@ -154,6 +155,7 @@ async def attach_a2a_routes(
     agent_card = _add_v0_3_compat_interface(agent_card)
 
     executor_config = A2aAgentExecutorConfig(
+        a2a_part_converter=a2ui_a2a_part_to_genai_part,
         gen_ai_part_converter=a2ui_genai_part_to_a2a_part,
         execute_interceptors=[a2ui_execute_interceptor()],
     )

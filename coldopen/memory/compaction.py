@@ -19,6 +19,20 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def summarize_turns(messages: list[dict[str, str]], *, max_lines: int = 8) -> str:
+    """Build a concise text digest for dropped conversation turns."""
+    digest_lines = [
+        f"- {msg.get('role', 'user')}: {msg.get('content', '').strip()[:120]}"
+        for msg in messages
+        if msg.get("content", "").strip()
+    ]
+    return (
+        "Earlier session summary:\n" + "\n".join(digest_lines[-max_lines:])
+        if digest_lines
+        else ""
+    )
+
+
 def compact_history(
     messages: list[dict[str, str]],
     *,
@@ -48,16 +62,7 @@ def compact_history(
     while len(recent) > 1 and sum(estimate_tokens(m.get("content", "")) for m in recent) > max_token_budget:
         older.append(recent.pop(0))
 
-    digest_lines = [
-        f"- {msg.get('role', 'user')}: {msg.get('content', '').strip()[:120]}"
-        for msg in older
-        if msg.get("content", "").strip()
-    ]
-    summary_prefix = (
-        "Earlier session summary:\n" + "\n".join(digest_lines[-8:])
-        if digest_lines
-        else ""
-    )
+    summary_prefix = summarize_turns(older)
     return CompactionResult(
         summary_prefix=summary_prefix,
         recent_messages=recent,

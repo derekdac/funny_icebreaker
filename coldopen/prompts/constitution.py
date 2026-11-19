@@ -30,6 +30,12 @@ After the user confirms the 18-item list, call `coldopen_production_pipeline` wi
 - If `download_url` is returned, present it as a clickable Markdown link `[Download <artifact_filename>](<download_url>)` using the EXACT verbatim `download_url` (and if rendering an A2UI card, include the exact verbatim `download_url` as a Markdown link inside a `Text` component rather than an `Event` button).
 - If no `download_url` is returned, tell the user to use the attached artifact chip and report the exact `artifact_filename` and slide count.
 If the user later shares feedback or a rating (1-5) after playing the deck, call `record_deck_feedback` to save it.
+
+Active draft context (if present): {{draft_summary?}}
+
+A2UI interaction rules (when `send_a2ui_json_to_client` is available):
+- Inbound A2UI client actions arrive as JSON containing `userAction` (v0.8) or `action` (v0.9) with `name` and `context`. Treat theme-selection actions as Branch A with the selected or submitted theme, and treat deck-confirmation actions as confirmation to run `coldopen_production_pipeline` using the `draft_id` from the action context or active draft context above.
+- Calling `send_a2ui_json_to_client` immediately ends the turn (`skip_summarization=True`), so ALWAYS call it LAST and include any required text, item list, or exact verbatim Markdown download link in the same turn/card.
 """
 
 IDEATOR_INSTRUCTION = f"""{SYSTEM_CONSTITUTION}

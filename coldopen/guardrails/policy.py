@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Callable
 
-from coldopen.memory.compaction import compact_history
+from coldopen.memory.compaction import compact_history, summarize_turns
 from coldopen.observability.logging import get_logger
 from coldopen.tools.schemas import DeckManifest
 
@@ -100,6 +100,36 @@ def request_host_approval(
     return approved, ("approved" if approved else reply or "rejected")
 
 
+def _is_clean_user_turn(content: object) -> bool:
+    """Return True if content is a user turn containing no function_response/function_call parts."""
+    role = (getattr(content, "role", None) or "").lower()
+    if role != "user":
+        return False
+    parts = getattr(content, "parts", None) or []
+    return not any(
+        getattr(p, "function_response", None) is not None
+        or getattr(p, "function_call", None) is not None
+        for p in parts
+    )
+
+
+def _find_safe_split_index(contents: list[object], *, max_recent_turns: int = 6) -> int | None:
+    """Find a split index near the last `max_recent_turns` turns starting on a clean user turn.
+
+    Searches backward from the target index down to index 1 first (preferring to preserve
+    the full active tool-call chain), then forward to the end of `contents` if needed.
+    Returns None if no safe boundary > 0 exists.
+    """
+    target_idx = max(1, len(contents) - max_recent_turns)
+    for idx in range(target_idx, 0, -1):
+        if _is_clean_user_turn(contents[idx]):
+            return idx
+    for idx in range(target_idx + 1, len(contents)):
+        if _is_clean_user_turn(contents[idx]):
+            return idx
+    return None
+
+
 def adk_policy_and_compaction_callback(
     callback_context: CallbackContext,
     llm_request: LlmRequest,
@@ -131,24 +161,51 @@ def adk_policy_and_compaction_callback(
             )
 
     if len(contents) > 8:
-        serialized = [
-            {
-                "role": getattr(c, "role", "user") or "user",
-                "content": " ".join(
-                    p.text for p in (getattr(c, "parts", None) or []) if getattr(p, "text", None)
-                ),
-            }
-            for c in contents
-        ]
-        compacted = compact_history(serialized, max_recent_turns=6, max_token_budget=2500)
-        if compacted.dropped_count > 0:
-            prefix = types.Content(
-                role="user",
-                parts=[types.Part.from_text(text=compacted.summary_prefix)],
+        split_idx = _find_safe_split_index(contents, max_recent_turns=6)
+        if split_idx is not None and split_idx > 0:
+            serialized = [
+                {
+                    "role": getattr(c, "role", "user") or "user",
+                    "content": " ".join(
+                        p.text for p in (getattr(c, "parts", None) or []) if getattr(p, "text", None)
+                    ),
+                }
+                for c in contents
+            ]
+            compacted = compact_history(
+                serialized,
+                max_recent_turns=len(contents) - split_idx,
+                max_token_budget=2500,
             )
-            llm_request.contents = [prefix, *contents[-6:]]
+            final_split_idx = split_idx
+            if compacted.dropped_count > split_idx:
+                for idx in range(compacted.dropped_count, len(contents)):
+                    if _is_clean_user_turn(contents[idx]):
+                        final_split_idx = idx
+                        break
+
+            summary_prefix = summarize_turns(serialized[:final_split_idx]).strip()
+            kept_contents = list(contents[final_split_idx:])
+            if summary_prefix:
+                first_kept = kept_contents[0]
+                if (getattr(first_kept, "role", None) or "").lower() == "user":
+                    first_parts = list(getattr(first_kept, "parts", None) or [])
+                    merged_first = types.Content(
+                        role=getattr(first_kept, "role", "user") or "user",
+                        parts=[types.Part.from_text(text=summary_prefix), *first_parts],
+                    )
+                    llm_request.contents = [merged_first, *kept_contents[1:]]
+                else:
+                    prefix = types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=summary_prefix)],
+                    )
+                    llm_request.contents = [prefix, *kept_contents]
+            else:
+                llm_request.contents = kept_contents
+
             _LOGGER.info(
                 "adk_history_compacted",
-                extra={"structured_fields": {"dropped_turns": compacted.dropped_count}},
+                extra={"structured_fields": {"dropped_turns": final_split_idx}},
             )
     return None

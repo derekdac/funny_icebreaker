@@ -15,13 +15,14 @@ _INITIALIZED = False
 
 
 def init_tracing(service_name: str = "coldopen", export_to_console: bool = False) -> trace.Tracer:
-    """Initialize OpenTelemetry TracerProvider once and return the ColdOpen tracer."""
+    """Initialize OpenTelemetry TracerProvider once if none is registered, and return the ColdOpen tracer."""
     global _INITIALIZED
     if not _INITIALIZED:
-        provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
-        if export_to_console:
-            provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
-        trace.set_tracer_provider(provider)
+        if isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider):
+            provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
+            if export_to_console:
+                provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+            trace.set_tracer_provider(provider)
         _INITIALIZED = True
     return trace.get_tracer(service_name)
 
@@ -29,7 +30,7 @@ def init_tracing(service_name: str = "coldopen", export_to_console: bool = False
 @contextmanager
 def traced_span(name: str, attributes: dict[str, str | int | bool] | None = None) -> Iterator[trace.Span]:
     """Context manager creating a linked OpenTelemetry span with safe attributes."""
-    tracer = init_tracing()
+    tracer = trace.get_tracer("coldopen")
     with tracer.start_as_current_span(name) as span:
         if attributes:
             for key, value in attributes.items():

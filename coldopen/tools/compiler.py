@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import os
 import re
+import tempfile
 import time
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +26,13 @@ from pydantic import ValidationError
 
 from coldopen.guardrails.policy import check_manifest_sfw
 from coldopen.memory.consolidator import schedule_memory_consolidation
-from coldopen.memory.store import ColdOpenStore
+from coldopen.memory.store import (
+    ColdOpenStore,
+    download_draft_manifest_from_gcs,
+    download_gcs_uri_to_file,
+    get_export_bucket,
+    upload_draft_manifest_to_gcs,
+)
 from coldopen.observability.logging import get_logger, log_tool_intent, log_tool_outcome
 from coldopen.observability.tracing import traced_span
 from coldopen.tools.auditor import audit_headline_leaks, check_sequence_entropy
@@ -74,30 +83,82 @@ def _title_to_filename(deck_title: str) -> str:
     return f"{slug or 'coldopen_deck'}.pptx"
 
 
-def _add_centered_picture(slide: object, image_path: str, top_in: float = 1.65, max_h_in: float = 3.7, max_w_in: float = 8.5) -> None:
-    """Insert an image scaled proportionally and centered horizontally on a 13.333in slide."""
-    with Image.open(image_path) as img:
-        w_px, h_px = img.size
-    aspect = (w_px / h_px) if h_px else 1.5
-    height_in = max_h_in
-    width_in = height_in * aspect
-    if width_in > max_w_in:
-        width_in = max_w_in
-        height_in = width_in / aspect
-    left_in = (13.333 - width_in) / 2.0
-    slide.shapes.add_picture(  # type: ignore[attr-defined]
-        image_path,
-        Inches(left_in),
-        Inches(top_in),
-        width=Inches(width_in),
-        height=Inches(height_in),
-    )
+def _add_centered_picture(
+    slide: object,
+    image_path: str,
+    top_in: float = 1.65,
+    max_h_in: float = 3.7,
+    max_w_in: float = 8.5,
+) -> bool:
+    """Insert an image scaled proportionally and centered horizontally on a 13.333in slide.
+
+    Returns True on success, or False if the image is corrupt/unreadable so a single bad
+    specimen image never crashes deck compilation.
+    """
+    try:
+        with Image.open(image_path) as img:
+            w_px, h_px = img.size
+        aspect = (w_px / h_px) if h_px else 1.5
+        height_in = max_h_in
+        width_in = height_in * aspect
+        if width_in > max_w_in:
+            width_in = max_w_in
+            height_in = width_in / aspect
+        left_in = (13.333 - width_in) / 2.0
+        slide.shapes.add_picture(  # type: ignore[attr-defined]
+            image_path,
+            Inches(left_in),
+            Inches(top_in),
+            width=Inches(width_in),
+            height=Inches(height_in),
+        )
+        return True
+    except Exception as exc:
+        _LOGGER.warning("Skipping corrupt or unreadable specimen image '%s': %s", image_path, exc)
+        return False
+
+
+def _load_draft_manifest(draft_id: str, db_path: str | None = None) -> dict[str, Any] | None:
+    """Load a draft manifest from local SQLite, falling back to GCS if configured."""
+    store = ColdOpenStore(db_path=db_path)
+    manifest_dict = store.get_draft_manifest(draft_id)
+    if manifest_dict:
+        return manifest_dict
+    manifest_dict = download_draft_manifest_from_gcs(draft_id)
+    if manifest_dict:
+        store.save_draft_manifest(draft_id, manifest_dict)
+    return manifest_dict
+
+
+def _materialize_manifest_images(
+    draft_id: str,
+    manifest_dict: dict[str, Any],
+    work_dir: Path,
+) -> dict[str, Any]:
+    """Download any gs:// or missing local specimen images into a scoped working directory."""
+    resolved = copy.deepcopy(manifest_dict)
+    export_bucket = get_export_bucket()
+    items = resolved.get("items", [])
+    for idx, item in enumerate(items):
+        img_path = item.get("image_path")
+        if not img_path or not isinstance(img_path, str):
+            continue
+        dest_file = work_dir / f"specimen_{idx}.png"
+        if img_path.startswith("gs://"):
+            downloaded = download_gcs_uri_to_file(img_path, dest_file)
+            item["image_path"] = str(downloaded) if downloaded else None
+        elif not Path(img_path).exists() and export_bucket:
+            fallback_uri = f"gs://{export_bucket}/coldopen-drafts/{draft_id}/images/{idx}.png"
+            downloaded = download_gcs_uri_to_file(fallback_uri, dest_file)
+            if downloaded:
+                item["image_path"] = str(downloaded)
+    return resolved
 
 
 def compile_pptx_deck(
     manifest: DeckManifest,
     output_path: str | None = None,
-    db_path: str = "coldopen_state.db",
+    db_path: str | None = None,
 ) -> dict[str, object]:
     """Compile a validated DeckManifest into a minimalist 16:9 PowerPoint deck.
 
@@ -180,10 +241,9 @@ def compile_pptx_deck(
                 and bool(item.image_path and Path(item.image_path).exists())
             )
             if has_image:
-                _add_centered_picture(r_slide, str(item.image_path), top_in=1.65, max_h_in=3.7)
-                pill_top = 5.55
-            else:
-                pill_top = 2.9
+                has_image = _add_centered_picture(r_slide, str(item.image_path), top_in=1.65, max_h_in=3.7)
+
+            pill_top = 5.55 if has_image else 2.9
 
             pill = r_slide.shapes.add_shape(
                 MSO_SHAPE.ROUNDED_RECTANGLE,
@@ -261,7 +321,7 @@ def compile_pptx_deck(
         return result.model_dump()
 
 
-def get_team_played_history(team_id: str = "default", db_path: str = "coldopen_state.db") -> dict[str, object]:
+def get_team_played_history(team_id: str = "default", db_path: str | None = None) -> dict[str, object]:
     """Retrieve previously played terms and recent host feedback to prevent repeats and improve quality.
 
     Args:
@@ -288,7 +348,7 @@ def record_deck_feedback(
     rating: int,
     notes: str,
     team_id: str = "default",
-    db_path: str = "coldopen_state.db",
+    db_path: str | None = None,
 ) -> dict[str, object]:
     """Store post-game host feedback (1-5 rating and notes) in SQLite memory.
 
@@ -315,7 +375,7 @@ def record_deck_feedback(
 def save_and_audit_draft(
     manifest: DeckManifest,
     banned_category_terms: list[str],
-    db_path: str = "coldopen_state.db",
+    db_path: str | None = None,
 ) -> dict[str, object]:
     """Validate SFW safety, leak-audit, entropy-check, and persist a draft manifest under a draft_id.
 
@@ -359,7 +419,10 @@ def save_and_audit_draft(
         }
 
     draft_id = f"draft-{uuid.uuid4().hex[:8]}"
-    ColdOpenStore(db_path=db_path).save_draft_manifest(draft_id, validated.model_dump())
+    manifest_dump = validated.model_dump()
+    ColdOpenStore(db_path=db_path).save_draft_manifest(draft_id, manifest_dump)
+    if get_export_bucket():
+        upload_draft_manifest_to_gcs(draft_id, manifest_dump)
     return {
         "ok": True,
         "passed": True,
@@ -372,7 +435,7 @@ def save_and_audit_draft(
 def compile_pptx_from_draft(
     draft_id: str,
     output_path: str | None = None,
-    db_path: str = "coldopen_state.db",
+    db_path: str | None = None,
 ) -> dict[str, object]:
     """Compile a saved draft_id into a 16:9 PowerPoint deck without re-serializing JSON.
 
@@ -384,25 +447,28 @@ def compile_pptx_from_draft(
     Returns:
         Dictionary matching CompileDeckResult on success, or ToolError if draft_id is missing.
     """
-    manifest_dict = ColdOpenStore(db_path=db_path).get_draft_manifest(draft_id)
+    manifest_dict = _load_draft_manifest(draft_id, db_path=db_path)
     if not manifest_dict:
         return ToolError(
             error_code="DRAFT_NOT_FOUND",
             message=f"No draft manifest found for draft_id '{draft_id}'.",
             recovery_instruction="Run save_and_audit_draft first to obtain a valid draft_id.",
         ).model_dump()
-    return compile_pptx_deck(
-        DeckManifest.model_validate(manifest_dict),
-        output_path=output_path,
-        db_path=db_path,
-    )
+
+    with tempfile.TemporaryDirectory(prefix=f"coldopen_compile_{draft_id}_") as tmp_dir:
+        materialized = _materialize_manifest_images(draft_id, manifest_dict, Path(tmp_dir))
+        return compile_pptx_deck(
+            DeckManifest.model_validate(materialized),
+            output_path=output_path,
+            db_path=db_path,
+        )
 
 
 PPTX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
 def _upload_pptx_to_gcs(pptx_path: Path, bucket_name: str, draft_id: str) -> str | None:
-    """Optionally upload compiled PPTX to GCS and return an authenticated download URL."""
+    """Optionally upload compiled PPTX to GCS and return a signed or authenticated download URL."""
     try:
         from google.cloud import storage
 
@@ -410,55 +476,100 @@ def _upload_pptx_to_gcs(pptx_path: Path, bucket_name: str, draft_id: str) -> str
         client = storage.Client(project=project)
         blob_name = f"coldopen-decks/{draft_id}/{pptx_path.name}"
         blob = client.bucket(bucket_name).blob(blob_name)
-        blob.content_disposition = f'attachment; filename="{pptx_path.name}"'
+        disposition = f'attachment; filename="{pptx_path.name}"'
+        blob.content_disposition = disposition
         blob.upload_from_filename(str(pptx_path), content_type=PPTX_MIME_TYPE)
+        try:
+            signed_url = blob.generate_signed_url(
+                version="v4",
+                expiration=timedelta(hours=1),
+                method="GET",
+                response_disposition=disposition,
+            )
+            if signed_url:
+                return str(signed_url)
+        except Exception as sign_exc:
+            _LOGGER.debug("V4 signed URL unavailable for %s, falling back to authenticated GCS URL: %s", blob_name, sign_exc)
         return f"https://storage.cloud.google.com/{bucket_name}/{blob_name}"
     except Exception as exc:  # pragma: no cover - optional cloud export
         _LOGGER.warning("GCS export skipped for %s: %s", pptx_path.name, exc)
         return None
 
 
+def _compile_draft_in_workdir(
+    draft_id: str,
+    work_dir: Path,
+    output_path: str | None,
+    db_path: str | None,
+) -> dict[str, object]:
+    """Load draft (SQLite or GCS), materialize images into work_dir, and compile PPTX inside work_dir."""
+    manifest_dict = _load_draft_manifest(draft_id, db_path=db_path)
+    if not manifest_dict:
+        return ToolError(
+            error_code="DRAFT_NOT_FOUND",
+            message=f"No draft manifest found for draft_id '{draft_id}'.",
+            recovery_instruction="Run save_and_audit_draft first to obtain a valid draft_id.",
+        ).model_dump()
+
+    materialized = _materialize_manifest_images(draft_id, manifest_dict, work_dir)
+    validated = DeckManifest.model_validate(materialized)
+    filename = (
+        Path(output_path).name
+        if output_path and output_path != "coldopen_deck.pptx"
+        else _title_to_filename(validated.deck_title)
+    )
+    scoped_output = str(work_dir / filename)
+    return compile_pptx_deck(
+        validated,
+        output_path=scoped_output,
+        db_path=db_path,
+    )
+
+
 async def compile_and_save_pptx_artifact(
     draft_id: str,
     tool_context: ToolContext,
     output_path: str | None = None,
-    db_path: str = "coldopen_state.db",
+    db_path: str | None = None,
 ) -> dict[str, Any]:
-    """Compile a saved draft_id to PPTX and publish it as a downloadable ADK artifact.
+    """Compile a saved draft_id to PPTX inside an isolated temp dir and publish it as a downloadable ADK artifact.
 
     Args:
         draft_id: Identifier returned by save_and_audit_draft.
         tool_context: ADK ToolContext used to save the compiled deck as a session artifact.
-        output_path: Optional destination filesystem path for the compiled .pptx file.
+        output_path: Optional filename/path hint for the compiled .pptx artifact.
         db_path: SQLite database path storing the draft and played history.
 
     Returns:
         CompileDeckResult fields enriched with artifact_filename, artifact_version, and
         optional download_url (when COLDOPEN_EXPORT_BUCKET is configured).
     """
-    result = compile_pptx_from_draft(
-        draft_id=draft_id,
-        output_path=output_path,
-        db_path=db_path,
-    )
-    if "error_code" in result:
+    with tempfile.TemporaryDirectory(prefix=f"coldopen_artifact_{draft_id}_") as tmp_dir:
+        result = await asyncio.to_thread(
+            _compile_draft_in_workdir,
+            draft_id,
+            Path(tmp_dir),
+            output_path,
+            db_path,
+        )
+        if "error_code" in result:
+            return result
+
+        pptx_path = Path(str(result["output_path"]))
+        pptx_bytes = await asyncio.to_thread(pptx_path.read_bytes)
+        artifact_part = types.Part.from_bytes(data=pptx_bytes, mime_type=PPTX_MIME_TYPE)
+        version = await tool_context.save_artifact(
+            filename=pptx_path.name,
+            artifact=artifact_part,
+        )
+        result["artifact_filename"] = pptx_path.name
+        result["artifact_version"] = version
+        result["mime_type"] = PPTX_MIME_TYPE
+
+        export_bucket = get_export_bucket()
+        if export_bucket:
+            download_url = await asyncio.to_thread(_upload_pptx_to_gcs, pptx_path, export_bucket, draft_id)
+            if download_url:
+                result["download_url"] = download_url
+
         return result
-
-    pptx_path = Path(str(result["output_path"]))
-    pptx_bytes = pptx_path.read_bytes()
-    artifact_part = types.Part.from_bytes(data=pptx_bytes, mime_type=PPTX_MIME_TYPE)
-    version = await tool_context.save_artifact(
-        filename=pptx_path.name,
-        artifact=artifact_part,
-    )
-    result["artifact_filename"] = pptx_path.name
-    result["artifact_version"] = version
-    result["mime_type"] = PPTX_MIME_TYPE
-
-    export_bucket = os.getenv("COLDOPEN_EXPORT_BUCKET", "").strip()
-    if export_bucket:
-        download_url = _upload_pptx_to_gcs(pptx_path, export_bucket, draft_id)
-        if download_url:
-            result["download_url"] = download_url
-
-    return result
