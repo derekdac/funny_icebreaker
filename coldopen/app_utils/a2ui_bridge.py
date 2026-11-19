@@ -104,10 +104,12 @@ def a2ui_execute_interceptor() -> ExecuteInterceptor:
         requested = set(context.requested_extensions or ())
         if A2UI_EXTENSION_V0_9 in requested:
             _ACTIVE_A2UI_VERSION.set("0.9")
-            context.add_activated_extension(A2UI_EXTENSION_V0_9)
+            if hasattr(context, "add_activated_extension"):
+                context.add_activated_extension(A2UI_EXTENSION_V0_9)
         elif A2UI_EXTENSION_V0_8 in requested:
             _ACTIVE_A2UI_VERSION.set("0.8")
-            context.add_activated_extension(A2UI_EXTENSION_V0_8)
+            if hasattr(context, "add_activated_extension"):
+                context.add_activated_extension(A2UI_EXTENSION_V0_8)
         else:
             _ACTIVE_A2UI_VERSION.set(None)
         return context
