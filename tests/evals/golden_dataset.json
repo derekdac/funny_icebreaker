@@ -1,0 +1,48 @@
+{
+  "leak_eval_cases": [
+    {
+      "name": "clean_florida_onion_headlines",
+      "banned_terms": ["florida", "onion"],
+      "items": [
+        {"term": "Man arrested for throwing alligator through drive-thru window"},
+        {"term": "Area resident insists he was only resting his eyes during 4-hour meeting"}
+      ],
+      "expected_passed": true
+    },
+    {
+      "name": "leaked_florida_keyword",
+      "banned_terms": ["florida", "onion"],
+      "items": [
+        {"term": "Florida man rides lawnmower down interstate"},
+        {"term": "Resident builds giant slingshot for pumpkins"}
+      ],
+      "expected_passed": false
+    },
+    {
+      "name": "leaked_cheese_keyword",
+      "banned_terms": ["font", "cheese"],
+      "items": [
+        {"term": "Garamond"},
+        {"term": "Caboc Cheese"}
+      ],
+      "expected_passed": false
+    }
+  ],
+  "entropy_eval_cases": [
+    {
+      "name": "irregular_clusters_pass",
+      "sequence": ["A", "A", "B", "A", "B", "B", "B", "A", "A", "B"],
+      "expected_passed": true
+    },
+    {
+      "name": "strict_alternating_fail",
+      "sequence": ["A", "B", "A", "B", "A", "B", "A", "B"],
+      "expected_passed": false
+    },
+    {
+      "name": "monoculture_fail",
+      "sequence": ["A", "A", "A", "A", "A"],
+      "expected_passed": false
+    }
+  ]
+}
